@@ -361,9 +361,22 @@ export default class PortalPlugin extends Plugin {
 		editor.setLine(cursor.line, newLine);
 		
 		// Move cursor to after the emoji
-		editor.setCursor({ line: cursor.line, ch: triggerPos + this.settings.portalEmoji.length });
+		const newCursorPos = { line: cursor.line, ch: triggerPos + this.settings.portalEmoji.length };
+		editor.setCursor(newCursorPos);
 		
+		// Apply subdued styling to subsequent typing
+		this.applyPortalTypingStyle(editor, newCursorPos);
+	
 		new Notice(`🌀 Portal ${portalId} opened (${this.settings.exitKey} to close)`, 3000);
+	}
+
+	applyPortalTypingStyle(editor: Editor, cursorPos: { line: number, ch: number }) {
+		// Apply subdued styling to text after the portal emoji
+		const editorEl = (editor as any).cm?.dom;
+		if (editorEl) {
+			// Add a class to the editor to enable portal typing styles
+			editorEl.classList.add('portal-typing-active');
+		}
 	}
 
 	async endPortalSession() {
@@ -376,22 +389,29 @@ export default class PortalPlugin extends Plugin {
 		const content = this.extractPortalContent(editor, portalPos, currentPos);
 		
 		if (content.trim()) {
-			// Generate Obsidian-compatible block ID
-			const blockId = await this.generateObsidianBlockId();
+			let blockId = portalId;
 			
-			// Replace emoji + content with Obsidian block reference
+			// If this is a new portal, generate a new block ID
+			if (!portalId || portalId === 'new') {
+				blockId = await this.generateObsidianBlockId();
+			}
+			
+			// Replace emoji + content with door emoji + hidden block reference
 			const startOfEmoji = { 
 				line: portalPos.line, 
 				ch: portalPos.ch 
 			};
 			
-			// Use Obsidian's native block reference format
-			editor.replaceRange(`^${blockId}`, startOfEmoji, currentPos);
+			// Keep the door emoji as a visual indicator with the block ID embedded
+			editor.replaceRange(`${this.settings.portalEmoji}[^${blockId}]`, startOfEmoji, currentPos);
+			
+			// Clean up any commented content from previous edit session
+			this.cleanupCommentedPortalContent(editor, blockId);
 			
 			// Add to portals section with proper block reference
 			this.addToPortalsSection(editor, blockId, content.trim());
 			
-			new Notice(`💭 Portal captured as ^${blockId}`);
+			new Notice(`💭 Portal ${portalId === blockId ? 'updated' : 'captured'} as ^${blockId}`);
 		} else {
 			// Remove empty portal (just the emoji)
 			const startOfEmoji = { line: portalPos.line, ch: portalPos.ch };
@@ -431,30 +451,79 @@ export default class PortalPlugin extends Plugin {
 		}
 	}
 
+	cleanupCommentedPortalContent(editor: Editor, blockId: string) {
+		const fullContent = editor.getValue();
+		const lines = fullContent.split('\n');
+		
+		// Remove any commented lines related to this portal
+		const cleanedLines = lines.filter(line => {
+			const isComment = line.trim().startsWith('<!--') && line.trim().endsWith('-->');
+			if (isComment) {
+				const uncommented = line.replace(/<!--\s*/, '').replace(/\s*-->/, '');
+				// Check if this commented line is related to our portal
+				return !uncommented.includes(`^${blockId}`) && !uncommented.includes(`Portal ${blockId}`);
+			}
+			return true;
+		});
+		
+		if (cleanedLines.length !== lines.length) {
+			editor.setValue(cleanedLines.join('\n'));
+		}
+	}
+
 	addToPortalsSection(editor: Editor, blockId: string, content: string) {
 		const fullContent = editor.getValue();
 		const lines = fullContent.split('\n');
 		
-		// Find or create portals section
-		let portalSectionIndex = -1;
+		// Check if this portal already exists (for updates)
+		let existingPortalStart = -1;
+		let existingPortalEnd = -1;
+		
 		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].trim() === '## Portals') {
-				portalSectionIndex = i;
+			if (lines[i].includes(`**Portal ${blockId}**`)) {
+				existingPortalStart = i;
+				// Find the end (the block reference line)
+				for (let j = i + 1; j < lines.length; j++) {
+					if (lines[j].trim() === `^${blockId}`) {
+						existingPortalEnd = j;
+						break;
+					}
+				}
 				break;
 			}
 		}
 		
 		const timestamp = new Date().toLocaleString();
-		// Use Obsidian's block reference format with backlink
-		const portalEntry = `\n**[[#^${blockId}|Portal ${blockId}]]** - *${timestamp}*\n${content} ^${blockId}\n`;
+		const portalEntry = `**Portal ${blockId}** - *${timestamp}*\n${content}\n^${blockId}`;
 		
-		if (portalSectionIndex !== -1) {
-			lines.splice(portalSectionIndex + 1, 0, portalEntry);
+		if (existingPortalStart !== -1 && existingPortalEnd !== -1) {
+			// Update existing portal
+			lines.splice(existingPortalStart, existingPortalEnd - existingPortalStart + 1, portalEntry);
 		} else {
-			lines.push('', '## Portals', portalEntry);
+			// Add new portal
+			// Find or create portals section
+			let portalSectionIndex = -1;
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].trim() === '## Portals') {
+					portalSectionIndex = i;
+					break;
+				}
+			}
+			
+			if (portalSectionIndex !== -1) {
+				lines.splice(portalSectionIndex + 1, 0, '', portalEntry);
+			} else {
+				lines.push('', '## Portals', '', portalEntry);
+			}
 		}
 		
+		// Save cursor position before updating content
+		const currentCursor = editor.getCursor();
+
 		editor.setValue(lines.join('\n'));
+
+		// Restore cursor position (account for added content)
+		editor.setCursor(currentCursor);
 	}
 
 	insertPortal(editor: Editor) {
@@ -478,10 +547,13 @@ export default class PortalPlugin extends Plugin {
 		document.querySelectorAll('.portal-editing').forEach(el => {
 			el.classList.remove('portal-editing');
 		});
+		document.querySelectorAll('.portal-typing-active').forEach(el => {
+			el.classList.remove('portal-typing-active');
+		});
 	}
 
 	processPortals: MarkdownPostProcessor = (element, context) => {
-		// Process Obsidian block references created by portals
+		// Process portal door + block reference patterns
 		
 		console.log('🚪 processPortals called');
 		console.log('Element:', element);
@@ -502,32 +574,144 @@ export default class PortalPlugin extends Plugin {
 		textNodes.forEach(textNode => {
 			const content = textNode.textContent || '';
 			
-			// Process Obsidian block references ^abc123def
-			const blockRefRegex = /\^([a-z0-9-]{7,})/g;
+			// Look for portal door + block reference pattern
+			const portalPattern = new RegExp(`(${this.settings.portalEmoji})\\[\\^([a-z0-9-]+)\\]`, 'g');
 			let match;
+			console.log(`Text node content: "${content}"`);
 			
-			if ((match = blockRefRegex.exec(content)) !== null) {
-				const blockId = match[1];
-				const newContent = content.replace(blockRefRegex, (fullMatch, id) => {
-					return `<span class="portal-door" data-block-id="${id}">💭</span>`;
+			while ((match = portalPattern.exec(content)) !== null) {
+				const blockId = match[2];
+				console.log('Found portal door with block reference:', blockId);
+				
+				// Create clickable portal door
+				const portalDoor = document.createElement('span');
+				portalDoor.className = 'portal-door';
+				portalDoor.setAttribute('data-block-id', blockId);
+				portalDoor.textContent = this.settings.portalEmoji;
+				portalDoor.title = `Portal ${blockId} - Click to edit`;
+				
+				// Add click handler for bi-directional editing
+				portalDoor.addEventListener('click', (e) => {
+					e.preventDefault();
+					this.editPortalContent(blockId);
 				});
 				
 				const wrapper = document.createElement('span');
-				wrapper.innerHTML = newContent;
 				wrapper.className = 'portal-container';
+				wrapper.appendChild(portalDoor);
 				
+				// Replace the portal pattern with just the door
+				const newContent = content.replace(portalPattern, '');
 				if (textNode.parentNode) {
-					textNode.parentNode.replaceChild(wrapper, textNode);
+					if (newContent.trim()) {
+						// Keep remaining text
+						textNode.textContent = newContent;
+						textNode.parentNode.insertBefore(wrapper, textNode.nextSibling);
+					} else {
+						// Replace entirely
+						textNode.parentNode.replaceChild(wrapper, textNode);
+					}
 				}
 				
 				// Create sidenote for this portal
+				console.log('Creating sidenote for block:', blockId);
 				this.createSidenoteFromBlockId(wrapper, blockId);
+				break; // Only process first match per text node
 			}
 		});
 
 		// Initialize sidenote manager for this element
 		setTimeout(() => this.sidenoteManager.processElement(element), 10);
 	};
+
+	editPortalContent(blockId: string) {
+		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!activeView) return;
+
+		const editor = activeView.editor;
+		const content = editor.getValue();
+		const lines = content.split('\n');
+		
+		// Find the portal door in the main content and the yspace content
+		let doorLine = -1;
+		let doorStart = -1;
+		let doorEnd = -1;
+		let contentStart = -1;
+		let contentEnd = -1;
+		
+		// Find door location
+		for (let i = 0; i < lines.length; i++) {
+			const doorPattern = new RegExp(`(${this.settings.portalEmoji})\\[\\^${blockId}\\]`);
+			const match = lines[i].match(doorPattern);
+			if (match) {
+				doorLine = i;
+				doorStart = lines[i].indexOf(match[0]);
+				doorEnd = doorStart + match[0].length;
+				break;
+			}
+		}
+		
+		// Find yspace content in Portals section
+		for (let i = 0; i < lines.length; i++) {
+			if (lines[i].trim() === `^${blockId}`) {
+				// Found the block reference, look backwards for content
+				for (let j = i - 1; j >= 0; j--) {
+					const line = lines[j].trim();
+					if (line && !line.startsWith('**Portal')) {
+						contentStart = j;
+						contentEnd = i - 1;
+						break;
+					}
+				}
+				break;
+			}
+		}
+		
+		if (doorLine >= 0 && contentStart >= 0) {
+			// Extract the yspace content
+			let yspaceContent = '';
+			for (let i = contentStart; i <= contentEnd; i++) {
+				yspaceContent += lines[i] + (i < contentEnd ? '\n' : '');
+			}
+			
+			// Replace door with expanded form for editing
+			const doorLineContent = lines[doorLine];
+			const newDoorLine = doorLineContent.substring(0, doorStart) + 
+							   this.settings.portalEmoji + yspaceContent + 
+							   doorLineContent.substring(doorEnd);
+			
+			lines[doorLine] = newDoorLine;
+			
+			// Remove from portals section temporarily
+			// Mark the portal section for cleanup by commenting it out
+			for (let i = contentStart; i <= contentEnd + 1; i++) {
+				if (i < lines.length) {
+					lines[i] = '<!-- ' + lines[i] + ' -->';
+				}
+			}
+			
+			editor.setValue(lines.join('\n'));
+			
+			// Position cursor at the end of the expanded content
+			const newCursorPos = {
+				line: doorLine,
+				ch: doorStart + this.settings.portalEmoji.length + yspaceContent.length
+			};
+			editor.setCursor(newCursorPos);
+			
+			// Start a new portal session for editing
+			this.activePortal = {
+				editor,
+				startPos: newCursorPos,
+				portalPos: { line: doorLine, ch: doorStart },
+				portalId: blockId,
+				isActive: true
+			};
+			
+			this.applyPortalTypingStyle(editor, newCursorPos);
+			new Notice(`📝 Editing portal ${blockId} - press ${this.settings.exitKey} to save`);
+		}
+	}
 
 	createSidenoteFromBlockId(container: HTMLElement, blockId: string) {
 		// Find portal content using Obsidian's block reference system
