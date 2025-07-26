@@ -1,0 +1,11 @@
+{
+	"id": "xy-margin-portal",
+	"name": "Portal Sidenotes",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Create Tufte-style sidenotes by opening portals in your writing. Type 🚪 to capture tangent thoughts without breaking flow.",
+	"author": "Portal Plugin Team",
+	"authorUrl": "",
+	"fundingUrl": "",
+	"isDesktopOnly": false
+}
