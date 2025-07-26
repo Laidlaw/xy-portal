@@ -35,6 +35,8 @@ interface SidenoteData {
 }
 
 export default class PortalPlugin extends Plugin {
+	private keySequence: string = '';
+	private sequenceTimeout: NodeJS.Timeout | null = null;
 	settings!: PortalSettings;
 	activePortal: ActivePortal | null = null;
 	sidenoteManager!: SidenoteManager;
@@ -279,10 +281,63 @@ export default class PortalPlugin extends Plugin {
 		}
 	}
 
-	handleKeyDown(event: KeyboardEvent) {
-		if (event.key === this.settings.exitKey && this.activePortal) {
-			event.preventDefault();
+	handleKeyDown(evt: KeyboardEvent) {
+		// Handle escape key for closing portals
+		if (evt.key === this.settings.exitKey && this.activePortal) {
+			evt.preventDefault();
 			this.endPortalSession();
+			return;
+		}
+
+		// Track key sequence for portal trigger
+		if (evt.key === '|') {
+			// Clear any existing timeout
+			if (this.sequenceTimeout) {
+				clearTimeout(this.sequenceTimeout);
+			}
+
+			// Add to sequence
+			this.keySequence += '|';
+
+			// Check if we have the full trigger
+			if (this.keySequence.endsWith(this.settings.portalTrigger)) {
+				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (activeView && !this.activePortal) {
+					// Small delay to ensure the characters are in the editor
+					setTimeout(() => {
+						this.checkAndStartPortal(activeView.editor);
+					}, 10);
+				}
+			}
+
+			// Reset sequence after a short delay to handle fast typing
+			this.sequenceTimeout = setTimeout(() => {
+				this.keySequence = '';
+			}, 200);
+		} else {
+			// Reset sequence for non-pipe keys (except modifiers)
+			if (!['Shift', 'Control', 'Alt', 'Meta'].includes(evt.key)) {
+				this.keySequence = '';
+				if (this.sequenceTimeout) {
+					clearTimeout(this.sequenceTimeout);
+					this.sequenceTimeout = null;
+				}
+			}
+		}
+	}
+
+	checkAndStartPortal(editor: Editor) {
+		const cursor = editor.getCursor();
+		const currentLine = editor.getLine(cursor.line);
+		
+		// Check if the trigger sequence is actually at the cursor position
+		const triggerStart = cursor.ch - this.settings.portalTrigger.length;
+		if (triggerStart >= 0) {
+			const textBeforeCursor = currentLine.substring(triggerStart, cursor.ch);
+			if (textBeforeCursor === this.settings.portalTrigger) {
+				// Found the trigger - start portal session
+				this.startPortalSession(editor, cursor, triggerStart);
+			}
 		}
 	}
 
@@ -515,6 +570,10 @@ export default class PortalPlugin extends Plugin {
 	onunload() {
 		if (this.activePortal) {
 			this.removePortalEditingClass();
+		}
+		
+		if (this.sequenceTimeout) {
+			clearTimeout(this.sequenceTimeout);
 		}
 		
 		if (this.styleSheet) {
