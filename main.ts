@@ -141,7 +141,7 @@ export default class PortalPlugin extends Plugin {
 			/* Sidenote base styles */
 			.portal-sidenote {
 				position: absolute;
-				right: -20rem;
+				left: calc(100% + 2rem);
 				width: 18rem;
 				background: rgba(139, 92, 246, 0.03);
 				border-left: 3px solid rgba(139, 92, 246, 0.4);
@@ -242,9 +242,42 @@ export default class PortalPlugin extends Plugin {
 				overflow: visible;
 			}
 
+			/* Create space for sidenotes by adjusting content width */
+			.markdown-preview-view .markdown-preview-sizer,
+			.markdown-source-view .cm-content {
+				max-width: 65%;
+				margin-left: 0;
+				margin-right: auto;
+			}
+
+			/* Ensure the workspace leaf has enough space */
+			.workspace-leaf-content[data-type="markdown"] {
+				position: relative;
+				overflow: visible;
+			}
+
+			/* Fix container positioning for sidenotes */
+			.portal-container {
+				position: relative;
+				display: inline;
+			}
+
 			/* Active portal editing indication */
 			.cm-line.portal-editing {
 				background: rgba(139, 92, 246, 0.05);
+			}
+			/* autogen styles for active portal typing */
+			/*
+			.cm-line.portal-typing-active {
+				background: rgba(139, 92, 246, 0.02);
+				color: #7c3aed;
+				font-style: italic;
+			}
+			*/
+			.portal-typing-active .cm-line {
+				color: #8b949e;
+				font-style: italic;
+				opacity: 0.8;
 			}
 		`;
 	}
@@ -816,9 +849,12 @@ class SidenoteManager {
 		const naturalTop = this.calculateNaturalTop(container);
 		sidenote.style.top = naturalTop + 'px';
 		
-		// Add to container
-		const portalContainer = container.closest('.markdown-preview-view') || container.closest('.markdown-source-view') || document.body;
-		portalContainer.appendChild(sidenote);
+		// Add to the appropriate container
+		const markdownContainer = container.closest('.markdown-preview-view, .markdown-source-view');
+		const workspaceLeaf = container.closest('.workspace-leaf-content[data-type="markdown"]');
+		const targetContainer = markdownContainer || workspaceLeaf || document.body;
+		
+		targetContainer.appendChild(sidenote);
 		
 		// Track sidenote
 		this.sidenotes.set(portalId, {
@@ -838,13 +874,20 @@ class SidenoteManager {
 
 	calculateNaturalTop(portalElement: HTMLElement): number {
 		const rect = portalElement.getBoundingClientRect();
-		const containerRect = portalElement.closest('.markdown-preview-view, .markdown-source-view')?.getBoundingClientRect();
 		
-		if (containerRect) {
-			return Math.max(0, rect.top - containerRect.top - 8);
+		// Find the best reference container
+		const markdownContainer = portalElement.closest('.markdown-preview-view, .markdown-source-view');
+		const workspaceLeaf = portalElement.closest('.workspace-leaf-content[data-type="markdown"]');
+		const referenceContainer = markdownContainer || workspaceLeaf;
+		
+		if (referenceContainer) {
+			const containerRect = referenceContainer.getBoundingClientRect();
+			const relativeTop = rect.top - containerRect.top;
+			return Math.max(0, relativeTop - 8);
 		}
 		
-		return rect.top;
+		// Fallback to viewport position
+		return Math.max(0, rect.top - 8);
 	}
 
 	resolveCollisions() {
