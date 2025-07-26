@@ -26,30 +26,22 @@ interface ActivePortal {
 	isActive: boolean;
 }
 
-interface SidenoteData {
-	element: HTMLElement;
-	naturalTop: number;
-	adjustedTop: number;
-	height: number;
-	portalId: string;
-}
+// Sidenotes are now handled by native callouts
 
 export default class PortalPlugin extends Plugin {
 	private keySequence: string = '';
 	private sequenceTimeout: NodeJS.Timeout | null = null;
 	settings!: PortalSettings;
 	activePortal: ActivePortal | null = null;
-	sidenoteManager!: SidenoteManager;
 	styleSheet: HTMLStyleElement | null = null;
 
 	async onload() {
 		await this.loadSettings();
 		
-		this.sidenoteManager = new SidenoteManager(this);
 		this.injectStyles();
 		
-		// Register markdown post processor for rendering portals
-		this.registerMarkdownPostProcessor(this.processPortals.bind(this));
+		// Handle portal door clicks for bidirectional editing
+		this.registerDomEvent(document, 'click', this.handlePortalClick.bind(this));
 		
 		// Handle typing in editor - use active-leaf-change to set up editor listeners
 		this.registerEvent(
@@ -73,23 +65,8 @@ export default class PortalPlugin extends Plugin {
 			hotkeys: [{ modifiers: ['Ctrl'], key: 'p' }]
 		});
 
-		this.addCommand({
-			id: 'recalculate-sidenotes',
-			name: 'Recalculate sidenote positions',
-			callback: () => {
-				this.sidenoteManager.recalculateAll();
-			}
-		});
-		
-		// Handle file changes to refresh sidenotes
-		this.registerEvent(
-			this.app.workspace.on('active-leaf-change', (leaf) => {
-				if (leaf?.view instanceof MarkdownView) {
-					this.setupEditorListener(leaf.view.editor);
-					setTimeout(() => this.sidenoteManager.recalculateAll(), 100);
-				}
-			})
-		);
+		// Register custom sidenote post-processor for better positioning
+		this.registerMarkdownPostProcessor(this.processSidenotes.bind(this));
 		
 		this.addSettingTab(new PortalSettingTab(this.app, this));
 	}
@@ -138,51 +115,80 @@ export default class PortalPlugin extends Plugin {
 				color: #7c3aed;
 			}
 
-			/* Sidenote base styles */
-			.portal-sidenote {
-				position: absolute;
-				left: calc(100% + 2rem);
-				width: 18rem;
-				background: rgba(139, 92, 246, 0.03);
-				border-left: 3px solid rgba(139, 92, 246, 0.4);
-				border-radius: 6px;
-				padding: 1rem;
-				font-size: 0.9rem;
-				line-height: 1.4;
-				color: #4b5563;
-				box-shadow: 0 2px 12px rgba(139, 92, 246, 0.08);
-				z-index: 100;
-				transition: all 0.3s ease;
-				margin-top: -0.5rem;
+			/* Tufte-style Sidenotes using Callouts */
+			
+			/* Create space for sidenotes by adjusting content width */
+			.workspace-leaf-content[data-type="markdown"] .markdown-preview-view .markdown-preview-sizer,
+			.workspace-leaf-content[data-type="markdown"] .markdown-source-view .cm-content {
+				max-width: 60% !important;
+				margin-left: 0 !important;
+				margin-right: 40% !important;
 			}
 
-			/* Tufte style */
-			.portal-sidenote.tufte-style {
-				background: rgba(139, 92, 246, 0.02);
-				border-left: 2px solid rgba(139, 92, 246, 0.3);
-				font-size: 0.85rem;
-				padding: 0.75rem;
+			/* Ensure containers can hold positioned elements */
+			.workspace-leaf-content[data-type="markdown"] {
+				position: relative !important;
+				overflow: visible !important;
+			}
+			
+			.workspace-leaf-content[data-type="markdown"] .markdown-preview-view,
+			.workspace-leaf-content[data-type="markdown"] .markdown-source-view .cm-editor {
+				position: relative !important;
+				overflow: visible !important;
 			}
 
-			/* Modern style */
-			.portal-sidenote.modern-style {
-				background: linear-gradient(135deg, rgba(139, 92, 246, 0.05), rgba(139, 92, 246, 0.02));
-				border: 1px solid rgba(139, 92, 246, 0.2);
-				border-left: 3px solid #8b5cf6;
-				box-shadow: 0 4px 16px rgba(139, 92, 246, 0.12);
+			/* Style sidenote callouts as floating margin notes */
+			.callout[data-callout="sidenote"] {
+				position: absolute !important;
+				left: calc(65% + 1rem) !important;
+				width: 30% !important;
+				max-width: 20rem !important;
+				margin: 0 !important;
+				z-index: 100 !important;
+				
+				/* Tufte styling based on user preference */
+				background: rgba(139, 92, 246, 0.02) !important;
+				border: none !important;
+				border-left: 2px solid rgba(139, 92, 246, 0.3) !important;
+				border-radius: 0 !important;
+				padding: 0.75rem !important;
+				font-size: 0.85rem !important;
+				line-height: 1.4 !important;
+				color: var(--text-muted) !important;
+				box-shadow: none !important;
 			}
 
-			/* Minimal style */
-			.portal-sidenote.minimal-style {
-				background: transparent;
-				border-left: 1px solid rgba(139, 92, 246, 0.4);
-				box-shadow: none;
-				font-size: 0.8rem;
-				padding: 0.5rem;
+			/* Enhanced positioning for dynamically positioned sidenotes */
+			.callout[data-callout="sidenote"].positioned-sidenote {
+				position: fixed !important;
+				z-index: 1000 !important;
+				background: rgba(139, 92, 246, 0.05) !important;
+				border-left: 3px solid rgba(139, 92, 246, 0.5) !important;
+				box-shadow: 0 2px 8px rgba(139, 92, 246, 0.1) !important;
 			}
 
-			/* Connection line */
-			.portal-sidenote::before {
+			/* Hide callout icons for sidenotes */
+			.callout[data-callout="sidenote"] .callout-icon {
+				display: none !important;
+			}
+
+			/* Style callout title as sidenote metadata */
+			.callout[data-callout="sidenote"] .callout-title {
+				font-size: 0.75rem !important;
+				color: var(--text-faint) !important;
+				font-weight: 500 !important;
+				margin-bottom: 0.5rem !important;
+				padding: 0 !important;
+			}
+
+			/* Style callout content */
+			.callout[data-callout="sidenote"] .callout-content {
+				padding: 0 !important;
+				margin: 0 !important;
+			}
+
+			/* Connection line from door to sidenote */
+			.callout[data-callout="sidenote"]::before {
 				content: '';
 				position: absolute;
 				left: -1.5rem;
@@ -193,87 +199,61 @@ export default class PortalPlugin extends Plugin {
 				opacity: 0.6;
 			}
 
-			/* Sidenote metadata */
-			.sidenote-meta {
-				font-size: 0.75rem;
-				color: #9ca3af;
-				margin-bottom: 0.5rem;
-				font-weight: 500;
-			}
-
-			.sidenote-content {
-				margin: 0;
-			}
-
 			/* Hover effects */
-			.portal-sidenote:hover {
-				background: rgba(139, 92, 246, 0.08);
-				border-left-color: #8b5cf6;
+			.callout[data-callout="sidenote"]:hover {
+				background: rgba(139, 92, 246, 0.08) !important;
+				border-left-color: var(--color-accent) !important;
 				transform: translateX(-2px);
-				box-shadow: 0 6px 20px rgba(139, 92, 246, 0.15);
+				box-shadow: 0 4px 12px rgba(139, 92, 246, 0.15) !important;
 			}
 
-			/* Collision adjustment indicator */
-			.portal-sidenote.collision-adjusted {
-				border-left-color: #f59e0b;
-				background: rgba(245, 158, 11, 0.05);
+			/* Modern style variant */
+			.callout[data-callout="sidenote"].modern-style {
+				background: linear-gradient(135deg, rgba(139, 92, 246, 0.05), rgba(139, 92, 246, 0.02)) !important;
+				border: 1px solid rgba(139, 92, 246, 0.2) !important;
+				border-left: 3px solid var(--color-accent) !important;
+				border-radius: 6px !important;
+				box-shadow: 0 4px 16px rgba(139, 92, 246, 0.12) !important;
 			}
 
-			/* Mobile responsive */
-			@media (max-width: 1400px) {
-				.portal-sidenote {
-					position: static;
-					width: 100%;
-					margin: 1rem 0;
-					right: auto;
-					background: rgba(139, 92, 246, 0.05);
-					border-left-width: 4px;
+			/* Minimal style variant */
+			.callout[data-callout="sidenote"].minimal-style {
+				background: transparent !important;
+				border-left: 1px solid rgba(139, 92, 246, 0.4) !important;
+				box-shadow: none !important;
+				font-size: 0.8rem !important;
+				padding: 0.5rem !important;
+			}
+
+			/* Mobile responsive - stack sidenotes inline */
+			@media (max-width: 1200px) {
+				.callout[data-callout="sidenote"] {
+					position: static !important;
+					left: auto !important;
+					width: 100% !important;
+					margin: 1rem 0 !important;
+					background: rgba(139, 92, 246, 0.05) !important;
+					border-left-width: 4px !important;
 				}
 				
-				.portal-sidenote::before {
-					display: none;
+				.callout[data-callout="sidenote"]::before {
+					display: none !important;
 				}
-			}
 
-			/* Ensure markdown container can hold absolute positioned elements */
-			.markdown-preview-view .markdown-preview-sizer,
-			.markdown-source-view .cm-editor {
-				position: relative;
-				overflow: visible;
-			}
-
-			/* Create space for sidenotes by adjusting content width */
-			.markdown-preview-view .markdown-preview-sizer,
-			.markdown-source-view .cm-content {
-				max-width: 65%;
-				margin-left: 0;
-				margin-right: auto;
-			}
-
-			/* Ensure the workspace leaf has enough space */
-			.workspace-leaf-content[data-type="markdown"] {
-				position: relative;
-				overflow: visible;
-			}
-
-			/* Fix container positioning for sidenotes */
-			.portal-container {
-				position: relative;
-				display: inline;
+				/* Restore full width on mobile */
+				.workspace-leaf-content[data-type="markdown"] .markdown-preview-view .markdown-preview-sizer,
+				.workspace-leaf-content[data-type="markdown"] .markdown-source-view .cm-content {
+					max-width: 100% !important;
+					margin-right: 0 !important;
+				}
 			}
 
 			/* Active portal editing indication */
 			.cm-line.portal-editing {
 				background: rgba(139, 92, 246, 0.05);
 			}
-			/* autogen styles for active portal typing */
-			/*
-			.cm-line.portal-typing-active {
-				background: rgba(139, 92, 246, 0.02);
-				color: #7c3aed;
-				font-style: italic;
-			}
-			*/
+			
+			/* Portal typing active styles */
 			.portal-typing-active .cm-line {
 				color: #8b949e;
 				font-style: italic;
@@ -390,11 +370,11 @@ export default class PortalPlugin extends Plugin {
 		
 		// Replace || with visual indicator that portal is active
 		const line = editor.getLine(cursor.line);
-		const newLine = line.slice(0, triggerPos) + this.settings.portalEmoji + line.slice(cursor.ch);
+		const newLine = line.slice(0, triggerPos) + `${this.settings.portalEmoji}[${portalId}]` + line.slice(cursor.ch);
 		editor.setLine(cursor.line, newLine);
 		
-		// Move cursor to after the emoji
-		const newCursorPos = { line: cursor.line, ch: triggerPos + this.settings.portalEmoji.length };
+		// Move cursor to after the emoji and ID
+		const newCursorPos = { line: cursor.line, ch: triggerPos + `${this.settings.portalEmoji}[${portalId}]`.length };
 		editor.setCursor(newCursorPos);
 		
 		// Apply subdued styling to subsequent typing
@@ -429,26 +409,31 @@ export default class PortalPlugin extends Plugin {
 				blockId = await this.generateObsidianBlockId();
 			}
 			
-			// Replace emoji + content with door emoji + hidden block reference
+			// Replace emoji + content with just the door emoji
 			const startOfEmoji = { 
 				line: portalPos.line, 
 				ch: portalPos.ch 
 			};
 			
-			// Keep the door emoji as a visual indicator with the block ID embedded
-			editor.replaceRange(`${this.settings.portalEmoji}[^${blockId}]`, startOfEmoji, currentPos);
+			// Keep just the door emoji with ID as a visual indicator
+			editor.replaceRange(`${this.settings.portalEmoji}[${blockId}]`, startOfEmoji, currentPos);
 			
 			// Clean up any commented content from previous edit session
 			this.cleanupCommentedPortalContent(editor, blockId);
 			
-			// Add to portals section with proper block reference
-			this.addToPortalsSection(editor, blockId, content.trim());
+			// Add to portals section as a callout
+			this.addToPortalsSectionAsCallout(editor, blockId, content.trim());
 			
-			new Notice(`💭 Portal ${portalId === blockId ? 'updated' : 'captured'} as ^${blockId}`);
+			new Notice(`💭 Portal ${portalId === blockId ? 'updated' : 'captured'} as ${blockId}`);
 		} else {
-			// Remove empty portal (just the emoji)
+			// Remove empty portal (emoji + ID)
+			const line = editor.getLine(portalPos.line);
+			const portalPattern = new RegExp(`${this.settings.portalEmoji.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\[([^\\]]+)\\]`);
+			const match = line.substring(portalPos.ch).match(portalPattern);
+			const portalMarkerLength = match ? match[0].length : this.settings.portalEmoji.length;
+			
 			const startOfEmoji = { line: portalPos.line, ch: portalPos.ch };
-			const endOfEmoji = { line: portalPos.line, ch: portalPos.ch + this.settings.portalEmoji.length };
+			const endOfEmoji = { line: portalPos.line, ch: portalPos.ch + portalMarkerLength };
 			editor.replaceRange('', startOfEmoji, endOfEmoji);
 			new Notice('Empty portal removed');
 		}
@@ -456,21 +441,26 @@ export default class PortalPlugin extends Plugin {
 		// Cleanup
 		this.removePortalEditingClass();
 		this.activePortal = null;
-		
-		// Refresh sidenotes after a brief delay
-		setTimeout(() => this.sidenoteManager.recalculateAll(), 100);
 	}
 
 	extractPortalContent(editor: Editor, portalPos: { line: number, ch: number }, currentPos: { line: number, ch: number }): string {
 		if (currentPos.line === portalPos.line) {
-			// Single line - extract everything after the emoji
+			// Single line - extract everything after the emoji[id]
 			const line = editor.getLine(portalPos.line);
-			return line.substring(portalPos.ch + this.settings.portalEmoji.length, currentPos.ch);
+			// Find the end of the portal marker
+			const portalPattern = new RegExp(`${this.settings.portalEmoji.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\[([^\\]]+)\\]`);
+			const match = line.substring(portalPos.ch).match(portalPattern);
+			const portalMarkerLength = match ? match[0].length : this.settings.portalEmoji.length;
+			return line.substring(portalPos.ch + portalMarkerLength, currentPos.ch);
 		} else {
 			// Multi-line
 			let content = '';
 			const firstLine = editor.getLine(portalPos.line);
-			content += firstLine.substring(portalPos.ch + this.settings.portalEmoji.length) + '\n';
+			// Find the end of the portal marker
+			const portalPattern = new RegExp(`${this.settings.portalEmoji.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\[([^\\]]+)\\]`);
+			const match = firstLine.substring(portalPos.ch).match(portalPattern);
+			const portalMarkerLength = match ? match[0].length : this.settings.portalEmoji.length;
+			content += firstLine.substring(portalPos.ch + portalMarkerLength) + '\n';
 			
 			for (let i = portalPos.line + 1; i < currentPos.line; i++) {
 				content += editor.getLine(i) + '\n';
@@ -504,36 +494,44 @@ export default class PortalPlugin extends Plugin {
 		}
 	}
 
-	addToPortalsSection(editor: Editor, blockId: string, content: string) {
+	addToPortalsSectionAsCallout(editor: Editor, blockId: string, content: string) {
 		const fullContent = editor.getValue();
 		const lines = fullContent.split('\n');
 		
 		// Check if this portal already exists (for updates)
-		let existingPortalStart = -1;
-		let existingPortalEnd = -1;
+		let existingCalloutStart = -1;
+		let existingCalloutEnd = -1;
 		
 		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].includes(`**Portal ${blockId}**`)) {
-				existingPortalStart = i;
-				// Find the end (the block reference line)
+			if (lines[i].includes(`> [!sidenote] Portal ${blockId}`)) {
+				existingCalloutStart = i;
+				// Find the end of the callout (next non-callout line)
 				for (let j = i + 1; j < lines.length; j++) {
-					if (lines[j].trim() === `^${blockId}`) {
-						existingPortalEnd = j;
+					if (!lines[j].startsWith('>') && lines[j].trim() !== '') {
+						existingCalloutEnd = j - 1;
 						break;
 					}
+				}
+				// If we reach end of file, the callout extends to the end
+				if (existingCalloutEnd === -1) {
+					existingCalloutEnd = lines.length - 1;
 				}
 				break;
 			}
 		}
 		
-		const timestamp = new Date().toLocaleString();
-		const portalEntry = `**Portal ${blockId}** - *${timestamp}*\n${content}\n^${blockId}`;
+		const timestamp = new Date().toLocaleTimeString();
+		// Create callout format for sidenote
+		const calloutLines = [
+			`> [!sidenote] Portal ${blockId} • ${timestamp}`,
+			...content.split('\n').map(line => `> ${line}`)
+		];
 		
-		if (existingPortalStart !== -1 && existingPortalEnd !== -1) {
-			// Update existing portal
-			lines.splice(existingPortalStart, existingPortalEnd - existingPortalStart + 1, portalEntry);
+		if (existingCalloutStart !== -1 && existingCalloutEnd !== -1) {
+			// Update existing portal callout
+			lines.splice(existingCalloutStart, existingCalloutEnd - existingCalloutStart + 1, ...calloutLines);
 		} else {
-			// Add new portal
+			// Add new portal callout
 			// Find or create portals section
 			let portalSectionIndex = -1;
 			for (let i = 0; i < lines.length; i++) {
@@ -544,9 +542,9 @@ export default class PortalPlugin extends Plugin {
 			}
 			
 			if (portalSectionIndex !== -1) {
-				lines.splice(portalSectionIndex + 1, 0, '', portalEntry);
+				lines.splice(portalSectionIndex + 1, 0, '', ...calloutLines, '');
 			} else {
-				lines.push('', '## Portals', '', portalEntry);
+				lines.push('', '## Portals', '', ...calloutLines, '');
 			}
 		}
 		
@@ -585,180 +583,177 @@ export default class PortalPlugin extends Plugin {
 		});
 	}
 
-	processPortals: MarkdownPostProcessor = (element, context) => {
-		// Process portal door + block reference patterns
+	handlePortalClick(evt: MouseEvent) {
+		const target = evt.target as HTMLElement;
 		
-		console.log('🚪 processPortals called');
-		console.log('Element:', element);
-		console.log('Element HTML:', element.innerHTML);
-		console.log('Context:', context);
-		
-		const walker = document.createTreeWalker(
-			element,
-			NodeFilter.SHOW_TEXT
-		);
-
-		const textNodes: Text[] = [];
-		let node;
-		while (node = walker.nextNode()) {
-			textNodes.push(node as Text);
-		}
-
-		textNodes.forEach(textNode => {
-			const content = textNode.textContent || '';
+		// Check if clicked element contains portal emoji
+		if (target.textContent?.includes(this.settings.portalEmoji)) {
+			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+			if (!activeView) return;
 			
-			// Look for portal door + block reference pattern
-			const portalPattern = new RegExp(`(${this.settings.portalEmoji})\\[\\^([a-z0-9-]+)\\]`, 'g');
-			let match;
-			console.log(`Text node content: "${content}"`);
-			
-			while ((match = portalPattern.exec(content)) !== null) {
-				const blockId = match[2];
-				console.log('Found portal door with block reference:', blockId);
-				
-				// Create clickable portal door
-				const portalDoor = document.createElement('span');
-				portalDoor.className = 'portal-door';
-				portalDoor.setAttribute('data-block-id', blockId);
-				portalDoor.textContent = this.settings.portalEmoji;
-				portalDoor.title = `Portal ${blockId} - Click to edit`;
-				
-				// Add click handler for bi-directional editing
-				portalDoor.addEventListener('click', (e) => {
-					e.preventDefault();
-					this.editPortalContent(blockId);
-				});
-				
-				const wrapper = document.createElement('span');
-				wrapper.className = 'portal-container';
-				wrapper.appendChild(portalDoor);
-				
-				// Replace the portal pattern with just the door
-				const newContent = content.replace(portalPattern, '');
-				if (textNode.parentNode) {
-					if (newContent.trim()) {
-						// Keep remaining text
-						textNode.textContent = newContent;
-						textNode.parentNode.insertBefore(wrapper, textNode.nextSibling);
-					} else {
-						// Replace entirely
-						textNode.parentNode.replaceChild(wrapper, textNode);
-					}
-				}
-				
-				// Create sidenote for this portal
-				console.log('Creating sidenote for block:', blockId);
-				this.createSidenoteFromBlockId(wrapper, blockId);
-				break; // Only process first match per text node
-			}
-		});
-
-		// Initialize sidenote manager for this element
-		setTimeout(() => this.sidenoteManager.processElement(element), 10);
-	};
-
-	editPortalContent(blockId: string) {
-		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (!activeView) return;
-
-		const editor = activeView.editor;
-		const content = editor.getValue();
-		const lines = content.split('\n');
-		
-		// Find the portal door in the main content and the yspace content
-		let doorLine = -1;
-		let doorStart = -1;
-		let doorEnd = -1;
-		let contentStart = -1;
-		let contentEnd = -1;
-		
-		// Find door location
-		for (let i = 0; i < lines.length; i++) {
-			const doorPattern = new RegExp(`(${this.settings.portalEmoji})\\[\\^${blockId}\\]`);
-			const match = lines[i].match(doorPattern);
-			if (match) {
-				doorLine = i;
-				doorStart = lines[i].indexOf(match[0]);
-				doorEnd = doorStart + match[0].length;
-				break;
-			}
-		}
-		
-		// Find yspace content in Portals section
-		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].trim() === `^${blockId}`) {
-				// Found the block reference, look backwards for content
-				for (let j = i - 1; j >= 0; j--) {
-					const line = lines[j].trim();
-					if (line && !line.startsWith('**Portal')) {
-						contentStart = j;
-						contentEnd = i - 1;
-						break;
-					}
-				}
-				break;
-			}
-		}
-		
-		if (doorLine >= 0 && contentStart >= 0) {
-			// Extract the yspace content
-			let yspaceContent = '';
-			for (let i = contentStart; i <= contentEnd; i++) {
-				yspaceContent += lines[i] + (i < contentEnd ? '\n' : '');
-			}
-			
-			// Replace door with expanded form for editing
-			const doorLineContent = lines[doorLine];
-			const newDoorLine = doorLineContent.substring(0, doorStart) + 
-							   this.settings.portalEmoji + yspaceContent + 
-							   doorLineContent.substring(doorEnd);
-			
-			lines[doorLine] = newDoorLine;
-			
-			// Remove from portals section temporarily
-			// Mark the portal section for cleanup by commenting it out
-			for (let i = contentStart; i <= contentEnd + 1; i++) {
-				if (i < lines.length) {
-					lines[i] = '<!-- ' + lines[i] + ' -->';
-				}
-			}
-			
-			editor.setValue(lines.join('\n'));
-			
-			// Position cursor at the end of the expanded content
-			const newCursorPos = {
-				line: doorLine,
-				ch: doorStart + this.settings.portalEmoji.length + yspaceContent.length
-			};
-			editor.setCursor(newCursorPos);
-			
-			// Start a new portal session for editing
-			this.activePortal = {
-				editor,
-				startPos: newCursorPos,
-				portalPos: { line: doorLine, ch: doorStart },
-				portalId: blockId,
-				isActive: true
-			};
-			
-			this.applyPortalTypingStyle(editor, newCursorPos);
-			new Notice(`📝 Editing portal ${blockId} - press ${this.settings.exitKey} to save`);
+			evt.preventDefault();
+			this.enterPortalEditMode(activeView.editor, target);
 		}
 	}
 
-	createSidenoteFromBlockId(container: HTMLElement, blockId: string) {
-		// Find portal content using Obsidian's block reference system
-		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (!activeView) return;
-
-		const content = activeView.editor.getValue();
-		// Look for the block with this ID in the Portals section
-		const blockRefRegex = new RegExp(`\\*\\*\\[\\[#\\^${blockId}\\|[^\\]]+\\]\\][^\\n]*\\n([^\\n\\^]+(?:\\n(?!\\*\\*|\\^)[^\\n]+)*)\\s*\\^${blockId}`, 'g');
-		const match = blockRefRegex.exec(content);
-
-		if (match && match[1]) {
-			this.sidenoteManager.createSidenote(container, blockId, match[1].trim());
+	async enterPortalEditMode(editor: Editor, portalElement: HTMLElement) {
+		// Find the portal door in editor content
+		const content = editor.getValue();
+		const lines = content.split('\n');
+		
+		// Look for the emoji in the text to find its position
+		for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+			const line = lines[lineNum];
+			const emojiIndex = line.indexOf(this.settings.portalEmoji);
+			
+			if (emojiIndex !== -1) {
+				// Try to extract portal ID or find associated yspace content
+				const portalId = this.findPortalIdNearPosition(lines, lineNum, emojiIndex);
+				if (portalId) {
+					await this.openPortalForEditing(editor, lineNum, emojiIndex, portalId);
+					return;
+				}
+			}
 		}
+	}
+
+	findPortalIdNearPosition(lines: string[], lineNum: number, emojiIndex: number): string | null {
+		// First, try to extract ID from the current line
+		const currentLine = lines[lineNum];
+		const portalPattern = new RegExp(`${this.settings.portalEmoji.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\[([^\\]]+)\\]`);
+		const match = currentLine.match(portalPattern);
+		
+		if (match) {
+			return match[1]; // Return the portal ID from the emoji
+		}
+		
+		// Fallback: look for any portal content in Portals section
+		const portalSectionStart = lines.findIndex(line => line.trim() === '## Portals');
+		if (portalSectionStart === -1) return null;
+		
+		// Find callouts in portal section and extract IDs
+		for (let i = portalSectionStart; i < lines.length; i++) {
+			const calloutMatch = lines[i].match(/> \[!sidenote\] Portal ([^\s•]+)/);
+			if (calloutMatch) {
+				return calloutMatch[1]; // Return the portal ID
+			}
+		}
+		
+		return null;
+	}
+
+	async openPortalForEditing(editor: Editor, lineNum: number, emojiIndex: number, portalId: string) {
+		// Find the yspace content for this portal
+		const yspaceContent = this.getYspaceContent(editor, portalId);
+		if (!yspaceContent) {
+			new Notice(`Portal ${portalId} content not found`);
+			return;
+		}
+		
+		// Replace door emoji with inline editable content
+		const line = editor.getLine(lineNum);
+		const beforeEmoji = line.substring(0, emojiIndex);
+		// Find the end of the portal marker (emoji + ID)
+		const portalPattern = new RegExp(`${this.settings.portalEmoji.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\[([^\\]]+)\\]`);
+		const match = line.substring(emojiIndex).match(portalPattern);
+		const portalMarkerLength = match ? match[0].length : this.settings.portalEmoji.length;
+		const afterEmoji = line.substring(emojiIndex + portalMarkerLength);
+		
+		// Create editable inline version
+		const editableContent = `${beforeEmoji}|| ${yspaceContent} ||${afterEmoji}`;
+		editor.setLine(lineNum, editableContent);
+		
+		// Position cursor inside the portal content
+		const cursorPos = { line: lineNum, ch: emojiIndex + 3 };
+		editor.setCursor(cursorPos);
+		
+		// Start portal session for editing
+		this.activePortal = {
+			editor,
+			startPos: cursorPos,
+			portalPos: { line: lineNum, ch: emojiIndex },
+			portalId,
+			isActive: true
+		};
+		
+		// Apply visual feedback
+		this.addPortalEditingClass(editor, lineNum);
+		this.applyPortalTypingStyle(editor, cursorPos);
+		
+		new Notice(`🌀 Editing Portal ${portalId} (${this.settings.exitKey} to close)`);
+	}
+
+	getYspaceContent(editor: Editor, portalId: string): string | null {
+		const content = editor.getValue();
+		const lines = content.split('\n');
+		
+		// Find the specific portal callout
+		let calloutStart = -1;
+		for (let i = 0; i < lines.length; i++) {
+			if (lines[i].includes(`> [!sidenote] Portal ${portalId}`)) {
+				calloutStart = i + 1; // Start after the title line
+				break;
+			}
+		}
+		
+		if (calloutStart === -1) return null;
+		
+		// Extract content until next non-callout line
+		const contentLines: string[] = [];
+		for (let i = calloutStart; i < lines.length; i++) {
+			if (lines[i].startsWith('> ')) {
+				contentLines.push(lines[i].substring(2)); // Remove "> " prefix
+			} else if (lines[i].trim() === '') {
+				continue; // Skip empty lines within callout
+			} else {
+				break; // End of callout
+			}
+		}
+		
+		return contentLines.join('\n').trim();
+	}
+
+	processSidenotes(el: HTMLElement, ctx: any) {
+		// Find sidenote callouts and position them near their portal doors
+		const sidenotes = el.querySelectorAll('.callout[data-callout="sidenote"]');
+		
+		Array.from(sidenotes).forEach((sidenote) => {
+			const titleEl = sidenote.querySelector('.callout-title');
+			if (!titleEl) return;
+			
+			// Extract portal ID from title
+			const match = titleEl.textContent?.match(/Portal ([^\s•]+)/);
+			if (!match) return;
+			
+			const portalId = match[1];
+			this.positionSidenoteNearPortal(sidenote as HTMLElement, portalId, el);
+		});
+	}
+
+	positionSidenoteNearPortal(sidenote: HTMLElement, portalId: string, container: HTMLElement) {
+		// Find portal door emoji in the document
+		const portalDoors = container.querySelectorAll('*');
+		let portalElement: HTMLElement | null = null;
+		
+		for (const element of Array.from(portalDoors)) {
+			if (element.textContent?.includes(this.settings.portalEmoji)) {
+				portalElement = element as HTMLElement;
+				break;
+			}
+		}
+		
+		if (!portalElement) return;
+		
+		// Calculate position relative to portal door
+		const portalRect = portalElement.getBoundingClientRect();
+		const containerRect = container.getBoundingClientRect();
+		
+		// Position sidenote adjacent to portal door
+		const topOffset = portalRect.top - containerRect.top;
+		sidenote.style.top = `${topOffset}px`;
+		
+		// Add visual connection
+		sidenote.classList.add('positioned-sidenote');
 	}
 
 	generateId(): string {
@@ -796,8 +791,6 @@ export default class PortalPlugin extends Plugin {
 		if (this.styleSheet) {
 			this.styleSheet.remove();
 		}
-		
-		this.sidenoteManager?.cleanup();
 	}
 
 	async loadSettings() {
@@ -811,155 +804,6 @@ export default class PortalPlugin extends Plugin {
 		if (this.styleSheet) {
 			this.styleSheet.textContent = this.generateCSS();
 		}
-		
-		this.sidenoteManager?.recalculateAll();
-	}
-}
-
-class SidenoteManager {
-	private plugin: PortalPlugin;
-	private sidenotes: Map<string, SidenoteData> = new Map();
-	private observer: ResizeObserver;
-
-	constructor(plugin: PortalPlugin) {
-		this.plugin = plugin;
-		this.observer = new ResizeObserver(() => {
-			this.recalculateAll();
-		});
-		
-		// Observe the main content area
-		const contentEl = document.querySelector('.workspace-leaf-content');
-		if (contentEl) {
-			this.observer.observe(contentEl);
-		}
-	}
-
-	createSidenote(container: HTMLElement, portalId: string, content: string) {
-		const sidenote = document.createElement('div');
-		sidenote.className = `portal-sidenote ${this.plugin.settings.sidenoteStyle}-style`;
-		sidenote.setAttribute('data-portal-id', portalId);
-		
-		const timestamp = new Date().toLocaleTimeString();
-		sidenote.innerHTML = `
-			<div class="sidenote-meta">Portal ${portalId} • ${timestamp}</div>
-			<div class="sidenote-content">${content}</div>
-		`;
-		
-		// Calculate natural position based on portal door location
-		const naturalTop = this.calculateNaturalTop(container);
-		sidenote.style.top = naturalTop + 'px';
-		
-		// Add to the appropriate container
-		const markdownContainer = container.closest('.markdown-preview-view, .markdown-source-view');
-		const workspaceLeaf = container.closest('.workspace-leaf-content[data-type="markdown"]');
-		const targetContainer = markdownContainer || workspaceLeaf || document.body;
-		
-		targetContainer.appendChild(sidenote);
-		
-		// Track sidenote
-		this.sidenotes.set(portalId, {
-			element: sidenote,
-			naturalTop,
-			adjustedTop: naturalTop,
-			height: sidenote.offsetHeight,
-			portalId
-		});
-		
-		// Resolve collisions
-		this.resolveCollisions();
-		
-		// Add interaction
-		this.addSidenoteInteraction(sidenote, container);
-	}
-
-	calculateNaturalTop(portalElement: HTMLElement): number {
-		const rect = portalElement.getBoundingClientRect();
-		
-		// Find the best reference container
-		const markdownContainer = portalElement.closest('.markdown-preview-view, .markdown-source-view');
-		const workspaceLeaf = portalElement.closest('.workspace-leaf-content[data-type="markdown"]');
-		const referenceContainer = markdownContainer || workspaceLeaf;
-		
-		if (referenceContainer) {
-			const containerRect = referenceContainer.getBoundingClientRect();
-			const relativeTop = rect.top - containerRect.top;
-			return Math.max(0, relativeTop - 8);
-		}
-		
-		// Fallback to viewport position
-		return Math.max(0, rect.top - 8);
-	}
-
-	resolveCollisions() {
-		if (!this.plugin.settings.autoCollisionDetection) return;
-
-		const notes = Array.from(this.sidenotes.values())
-			.sort((a, b) => a.naturalTop - b.naturalTop);
-
-		let lastBottom = 0;
-		const minSpacing = this.plugin.settings.minSpacing;
-
-		notes.forEach(note => {
-			const newTop = Math.max(note.naturalTop, lastBottom + minSpacing);
-			note.adjustedTop = newTop;
-			note.element.style.top = newTop + 'px';
-			
-			// Visual indicator if position was adjusted
-			if (Math.abs(newTop - note.naturalTop) > 5) {
-				note.element.classList.add('collision-adjusted');
-			} else {
-				note.element.classList.remove('collision-adjusted');
-			}
-			
-			lastBottom = newTop + note.height + 5; // Small buffer
-		});
-	}
-
-	addSidenoteInteraction(sidenote: HTMLElement, portalDoor: HTMLElement) {
-		// Highlight connection on hover
-		const portalDoorEl = portalDoor.querySelector('.portal-door');
-		
-		if (portalDoorEl) {
-			portalDoorEl.addEventListener('mouseenter', () => {
-				sidenote.style.background = 'rgba(139, 92, 246, 0.1)';
-				sidenote.style.borderLeftColor = '#8b5cf6';
-			});
-			
-			portalDoorEl.addEventListener('mouseleave', () => {
-				sidenote.style.background = '';
-				sidenote.style.borderLeftColor = '';
-			});
-		}
-		
-		// Click to focus
-		sidenote.addEventListener('click', () => {
-			sidenote.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-		});
-	}
-
-	processElement(element: HTMLElement) {
-		// Update existing sidenotes in this element
-		this.recalculateAll();
-	}
-
-	recalculateAll() {
-		// Recalculate heights
-		this.sidenotes.forEach(note => {
-			note.height = note.element.offsetHeight;
-		});
-		
-		// Resolve collisions
-		this.resolveCollisions();
-	}
-
-	cleanup() {
-		if (this.observer) {
-			this.observer.disconnect();
-		}
-		this.sidenotes.forEach(note => {
-			note.element.remove();
-		});
-		this.sidenotes.clear();
 	}
 }
 
@@ -1066,14 +910,11 @@ class PortalSettingTab extends PluginSettingTab {
 		// Debug controls
 		containerEl.createEl('h3', { text: 'Debug & Maintenance' });
 		
-		new Setting(containerEl)
-			.setName('Recalculate positions')
-			.setDesc('Manually trigger sidenote position recalculation')
-			.addButton(button => button
-				.setButtonText('Recalculate')
-				.onClick(() => {
-					this.plugin.sidenoteManager.recalculateAll();
-					new Notice('Sidenote positions recalculated');
-				}));
+		const debugInfo = containerEl.createEl('div', { cls: 'setting-item-description' });
+		debugInfo.innerHTML = `
+			<p><strong>Callout-based Sidenotes:</strong></p>
+			<p>Sidenotes are now rendered using Obsidian's native callout system with <code>[!sidenote]</code> type.</p>
+			<p>Positioning and styling are handled automatically through CSS.</p>
+		`;
 	}
 }

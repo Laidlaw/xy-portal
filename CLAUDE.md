@@ -89,3 +89,7 @@ The portal system is conceptually similar to Obsidian's CalloutsAndCheckboxesHel
 - **Navigation**: Bidirectional linking between door and yspace entry
 
 This design prioritizes maintaining writing flow while providing flexible access to captured tangential content.
+
+## Development History
+
+For a detailed chronicle of the plugin's development journey, including technical challenges, architecture decisions, and lessons learned, see [claude-log.md](./claude-log.md).
