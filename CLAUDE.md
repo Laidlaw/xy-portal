@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Branch Strategy
+
+**Main Branch**: Inline portal editing with bidirectional click-to-edit functionality
+**Sidecar-Architecture Branch**: Document-based portal system with dedicated sidecar files
+
+This branch (sidecar-architecture) explores a fundamentally different approach to portal management using separate documents for y-space content.
+
 ## Development Commands
 
 - `npm run dev` - Start development mode with live reloading

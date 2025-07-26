@@ -184,3 +184,64 @@ When approached to fix the "sidenotes fail to capture the intended goal" issue, 
 4. **DOM Query Performance**: Searching through all elements to find portal doors on every post-processor call could impact performance on large documents.
 
 These failures taught valuable lessons about working within Obsidian's constraints while pushing the boundaries of what's possible with plugins.
+
+## Phase 7: Sidecar Document Architecture Investigation (January 2025)
+
+### Critical Issues with Current Implementation
+
+**State Logic Failures Identified:**
+1. **Dangerous Cursor Behavior**: Clicking while in portal mode creates new portal triggers and can swallow content from cursor to end of document when ESC is pressed
+2. **No Session Protection**: Multiple portal operations interfere with each other
+3. **Click Event Conflicts**: Portal editing state isn't properly isolated from normal document interaction
+4. **Callout Positioning Failure**: Sidenotes still not appearing as true margin notes despite post-processor
+
+### Architectural Pivot: Sidecar Document Approach
+
+**Research Findings:**
+- **Contextual Sidecar Plugin**: Proves sidecar documents are feasible in Obsidian
+- **Workspace Split API**: `app.workspace` provides programmatic pane management
+- **Document Linking**: Can open specific documents in side panes with scroll sync potential
+
+**Proposed Sidecar Architecture:**
+```
+main-note.md                    main-note.portals.md
+├─ Main narrative (x-space)     ├─ ## Portal abc123
+├─ Portal doors: 🚪[abc123]     │   Content for portal abc123
+└─ Clean, uncluttered flow     ├─ ## Portal def456  
+                                │   Content for portal def456
+                                └─ Scroll-synced to main document
+```
+
+**Benefits:**
+1. **State Safety**: No dangerous editing modes in main document
+2. **True Margin Feel**: Dedicated sidecar space behaves like actual margins
+3. **Flow Preservation**: Portal triggers just create doors, editing happens in sidecar
+4. **Performance**: No complex DOM manipulation or positioning calculations
+5. **Scalability**: Each document gets its own portal space
+
+**Implementation Approach:**
+1. **Portal Creation**: `||` creates door in main doc + entry in sidecar
+2. **Sidecar Management**: Auto-open `.portals.md` in right pane when portals exist
+3. **Scroll Synchronization**: Track scroll events to keep panes aligned
+4. **Navigation Commands**: Keyboard shortcuts to jump between main and sidecar
+5. **Content Linking**: Portal doors link to specific sections in sidecar
+
+This architecture addresses the fundamental state management issues while providing the true "portal" experience between interconnected thought spaces.
+
+### Branch Decision: Parallel Development
+
+Rather than abandoning the inline approach, we're treating this as a different plugin architecture:
+
+**Main Branch (Inline Approach)**:
+- Valuable for non-Obsidian contexts
+- Demonstrates complex state management patterns
+- Shows advanced DOM manipulation techniques
+- Could work well in simpler editors
+
+**Sidecar Branch (Document Approach)**:
+- Optimized for Obsidian's multi-pane architecture
+- Leverages native document linking and workspace management
+- Safer state management through document isolation
+- Better alignment with Obsidian's plugin ecosystem
+
+Both approaches have merit and solve the portal problem differently. The inline approach may find life in other contexts where the sidecar pattern isn't available.
