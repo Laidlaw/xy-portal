@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Plugin, PluginSettingTab, Setting, MarkdownPostProcessor, Notice } from 'obsidian';
+import { App, Editor, MarkdownView, Plugin, PluginSettingTab, Setting, Notice } from 'obsidian';
 
 interface PortalSettings {
 	portalTrigger: string;
@@ -24,6 +24,8 @@ interface ActivePortal {
 	portalPos: { line: number, ch: number };
 	portalId: string;
 	isActive: boolean;
+	originalFile?: string;
+	originalPosition?: { line: number, ch: number };
 }
 
 // Sidenotes are now handled by native callouts
@@ -52,6 +54,10 @@ export default class PortalPlugin extends Plugin {
 		// Handle escape key for portal creation
 		this.registerDomEvent(document, 'keydown', this.handleKeyDown.bind(this));
 		
+		// Handle hover previews for portal doors
+		this.registerDomEvent(document, 'mouseover', this.handlePortalHover.bind(this));
+		this.registerDomEvent(document, 'mouseout', this.handlePortalHoverEnd.bind(this));
+		
 		// Commands
 		this.addCommand({
 			id: 'insert-portal',
@@ -65,7 +71,7 @@ export default class PortalPlugin extends Plugin {
 		this.addCommand({
 			id: 'open-sidecar',
 			name: 'Open portal sidecar',
-			editorCallback: (editor: Editor) => {
+			editorCallback: () => {
 				this.openSidecar();
 			},
 			hotkeys: [{ modifiers: ['Ctrl', 'Shift'], key: 'p' }]
@@ -81,12 +87,29 @@ export default class PortalPlugin extends Plugin {
 	}
 
 	generateCSS(): string {
-		const spacing = this.settings.minSpacing;
 		
 		return `
 			/* Portal Plugin Styles */
 			.portal-container {
 				position: relative;
+			}
+
+			/* Style portal doors with IDs */
+			span:has-text("🚪["), 
+			.cm-line:contains("🚪[") {
+				color: #8b5cf6;
+				font-weight: bold;
+				cursor: pointer;
+				padding: 1px 3px;
+				border-radius: 3px;
+				transition: all 0.2s ease;
+				position: relative;
+			}
+
+			span:has-text("🚪["):hover,
+			.cm-line:contains("🚪["):hover {
+				background: rgba(139, 92, 246, 0.15);
+				transform: scale(1.05);
 			}
 
 			.portal-door {
@@ -107,6 +130,20 @@ export default class PortalPlugin extends Plugin {
 			.portal-door.active {
 				background: rgba(139, 92, 246, 0.2);
 				box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
+			}
+
+			/* Portal preview tooltip styles */
+			.portal-preview-tooltip {
+				background: var(--background-secondary) !important;
+				border: 1px solid var(--background-modifier-border) !important;
+				border-radius: 4px !important;
+				padding: 8px 12px !important;
+				font-size: 0.9em !important;
+				max-width: 300px !important;
+				box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+				z-index: 1000 !important;
+				pointer-events: none !important;
+				position: absolute !important;
 			}
 
 			/* Portal content in edit mode */
@@ -298,6 +335,13 @@ export default class PortalPlugin extends Plugin {
 	}
 
 	handleKeyDown(evt: KeyboardEvent) {
+		// Handle ESC key for automated return to original position
+		if (evt.key === 'Escape' && this.activePortal && this.activePortal.isActive) {
+			evt.preventDefault();
+			this.returnToOriginalPosition();
+			return;
+		}
+
 		// Track key sequence for portal trigger
 		if (evt.key === '|') {
 			// Clear any existing timeout
@@ -353,6 +397,9 @@ export default class PortalPlugin extends Plugin {
 	async startPortalSession(editor: Editor, cursor: { line: number, ch: number }, triggerPos: number) {
 		const portalId = this.generateId();
 		
+		// Store original cursor position for return navigation
+		const originalPos = { line: cursor.line, ch: triggerPos };
+		
 		// Simple atomic operation: replace || with door
 		const line = editor.getLine(cursor.line);
 		const newLine = line.slice(0, triggerPos) + `${this.settings.portalEmoji}[${portalId}]` + line.slice(cursor.ch);
@@ -361,11 +408,10 @@ export default class PortalPlugin extends Plugin {
 		// Create entry in sidecar document
 		await this.createSidecarEntry(portalId);
 		
-		// Move cursor past the door
-		const newCursorPos = { line: cursor.line, ch: triggerPos + `${this.settings.portalEmoji}[${portalId}]`.length };
-		editor.setCursor(newCursorPos);
+		// AUTOMATED FLOW: Open sidecar and move cursor
+		await this.openSidecarAndFocusPortal(portalId, originalPos);
 		
-		new Notice(`🚪 Portal ${portalId} created - Ctrl+Shift+P to open sidecar`, 3000);
+		new Notice(`🚪 Portal ${portalId} ready for content`, 2000);
 	}
 
 	applyPortalTypingStyle(editor: Editor, cursorPos: { line: number, ch: number }) {
@@ -591,6 +637,256 @@ export default class PortalPlugin extends Plugin {
 		} else {
 			new Notice('No portal sidecar exists for this document');
 		}
+	}
+
+	async openSidecarAndFocusPortal(portalId: string, originalPos: { line: number, ch: number }) {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) return;
+
+		// Store current context for ESC return
+		this.activePortal = {
+			editor: this.app.workspace.getActiveViewOfType(MarkdownView)?.editor!,
+			startPos: originalPos,
+			portalPos: originalPos,
+			portalId: portalId,
+			isActive: true,
+			originalFile: activeFile.path,
+			originalPosition: originalPos
+		};
+
+		const sidecarPath = activeFile.path.replace(/\.md$/, '.portals.md');
+		const sidecarFile = this.app.vault.getAbstractFileByPath(sidecarPath);
+
+		if (sidecarFile) {
+			// Open sidecar in right pane
+			const leaf = this.app.workspace.getRightLeaf(false);
+			if (leaf) {
+				await leaf.openFile(sidecarFile as any);
+				
+				// Focus the sidecar and position cursor at the portal section
+				await this.focusPortalInSidecar(leaf, portalId);
+			}
+		}
+	}
+
+	async focusPortalInSidecar(leaf: any, portalId: string) {
+		// Give the leaf time to fully load
+		await new Promise(resolve => setTimeout(resolve, 100));
+		
+		const view = leaf.view;
+		if (view instanceof MarkdownView) {
+			const editor = view.editor;
+			const content = editor.getValue();
+			
+			// Find the portal section
+			const portalHeader = `## Portal ${portalId}`;
+			const headerIndex = content.indexOf(portalHeader);
+			
+			if (headerIndex !== -1) {
+				// Position cursor at end of portal section for immediate typing
+				const lines = content.split('\n');
+				let targetLine = 0;
+				
+				for (let i = 0; i < lines.length; i++) {
+					if (lines[i].includes(portalHeader)) {
+						// Position cursor after the header, ready for content
+						targetLine = i + 1;
+						break;
+					}
+				}
+				
+				editor.setCursor({ line: targetLine, ch: 0 });
+				editor.focus();
+			}
+		}
+	}
+
+	async returnToOriginalPosition() {
+		if (!this.activePortal || !this.activePortal.originalFile || !this.activePortal.originalPosition) {
+			return;
+		}
+
+		// Sync portal content to bottom of main document
+		await this.syncPortalContentToMainDoc();
+
+		// Find and focus the original file
+		const originalFile = this.app.vault.getAbstractFileByPath(this.activePortal.originalFile);
+		if (originalFile) {
+			// Get the left leaf (main document area) 
+			const leftLeaf = this.app.workspace.getLeftLeaf(false);
+			if (leftLeaf) {
+				await leftLeaf.openFile(originalFile as any);
+				
+				// Wait for the view to load
+				await new Promise(resolve => setTimeout(resolve, 50));
+				
+				const view = leftLeaf.view;
+				if (view instanceof MarkdownView) {
+					// Position cursor after the portal door
+					const portalDoorLength = `${this.settings.portalEmoji}[${this.activePortal.portalId}]`.length;
+					const returnPos = {
+						line: this.activePortal.originalPosition.line,
+						ch: this.activePortal.originalPosition.ch + portalDoorLength
+					};
+					
+					view.editor.setCursor(returnPos);
+					view.editor.focus();
+				}
+			}
+		}
+
+		// Clear active portal state
+		this.activePortal = null;
+		new Notice('Returned to main document', 1500);
+	}
+
+	async syncPortalContentToMainDoc() {
+		if (!this.activePortal) return;
+
+		// Get current sidecar content
+		const sidecarPath = this.activePortal.originalFile?.replace(/\.md$/, '.portals.md');
+		if (!sidecarPath) return;
+
+		const sidecarFile = this.app.vault.getAbstractFileByPath(sidecarPath);
+		if (sidecarFile) {
+			const sidecarContent = await this.app.vault.read(sidecarFile as any);
+			
+			// Extract content for this portal
+			const portalHeader = `## Portal ${this.activePortal.portalId}`;
+			const lines = sidecarContent.split('\n');
+			
+			let portalContent = '';
+			let inPortalSection = false;
+			
+			for (const line of lines) {
+				if (line === portalHeader) {
+					inPortalSection = true;
+					continue;
+				}
+				if (inPortalSection && line.startsWith('## Portal ')) {
+					break; // Hit the next portal section
+				}
+				if (inPortalSection && line.trim()) {
+					portalContent += line + '\n';
+				}
+			}
+
+			// Add to main document bottom if there's content
+			if (portalContent.trim()) {
+				await this.addPortalToMainDoc(this.activePortal.portalId, portalContent.trim());
+			}
+		}
+	}
+
+	async addPortalToMainDoc(portalId: string, content: string) {
+		if (!this.activePortal?.originalFile) return;
+
+		const originalFile = this.app.vault.getAbstractFileByPath(this.activePortal.originalFile);
+		if (originalFile) {
+			const mainContent = await this.app.vault.read(originalFile as any);
+			
+			// Add portal content to "## Portals" section at bottom
+			let updatedContent = mainContent;
+			
+			if (!mainContent.includes('## Portals')) {
+				updatedContent += '\n\n## Portals\n';
+			}
+			
+			const portalEntry = `\n### ${portalId}\n${content}\n`;
+			updatedContent += portalEntry;
+			
+			await this.app.vault.modify(originalFile as any, updatedContent);
+		}
+	}
+
+	async handlePortalHover(evt: MouseEvent) {
+		const target = evt.target as HTMLElement;
+		
+		// Check if hovering over a portal door
+		if (target.textContent?.includes(this.settings.portalEmoji)) {
+			const portalMatch = target.textContent.match(/🚪\[([^\]]+)\]/);
+			if (portalMatch) {
+				const portalId = portalMatch[1];
+				await this.showPortalPreview(target, portalId);
+			}
+		}
+	}
+
+	handlePortalHoverEnd() {
+		// Remove any existing preview tooltips
+		document.querySelectorAll('.portal-preview-tooltip').forEach(el => el.remove());
+	}
+
+	async showPortalPreview(element: HTMLElement, portalId: string) {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) return;
+
+		// Get portal content from sidecar
+		const sidecarPath = activeFile.path.replace(/\.md$/, '.portals.md');
+		const sidecarFile = this.app.vault.getAbstractFileByPath(sidecarPath);
+		
+		if (sidecarFile) {
+			const sidecarContent = await this.app.vault.read(sidecarFile as any);
+			
+			// Extract content for this portal
+			const portalHeader = `## Portal ${portalId}`;
+			const lines = sidecarContent.split('\n');
+			
+			let portalContent = '';
+			let inPortalSection = false;
+			
+			for (const line of lines) {
+				if (line === portalHeader) {
+					inPortalSection = true;
+					continue;
+				}
+				if (inPortalSection && line.startsWith('## Portal ')) {
+					break;
+				}
+				if (inPortalSection && line.trim()) {
+					portalContent += line + '\n';
+				}
+			}
+
+			if (portalContent.trim()) {
+				this.createPreviewTooltip(element, portalContent.trim());
+			}
+		}
+	}
+
+	createPreviewTooltip(element: HTMLElement, content: string) {
+		// Remove any existing tooltips
+		document.querySelectorAll('.portal-preview-tooltip').forEach(el => el.remove());
+
+		const tooltip = document.createElement('div');
+		tooltip.className = 'portal-preview-tooltip';
+		tooltip.textContent = content;
+		
+		// Style the tooltip
+		Object.assign(tooltip.style, {
+			position: 'absolute',
+			background: 'var(--background-secondary)',
+			border: '1px solid var(--background-modifier-border)',
+			borderRadius: '4px',
+			padding: '8px 12px',
+			fontSize: '0.9em',
+			maxWidth: '300px',
+			boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+			zIndex: '1000',
+			pointerEvents: 'none'
+		});
+
+		// Position tooltip near the element
+		const rect = element.getBoundingClientRect();
+		tooltip.style.left = rect.right + 10 + 'px';
+		tooltip.style.top = rect.top + 'px';
+
+		document.body.appendChild(tooltip);
+
+		// Auto-remove after delay
+		setTimeout(() => {
+			tooltip.remove();
+		}, 3000);
 	}
 
 	addPortalEditingClass(editor: Editor, line: number) {
