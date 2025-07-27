@@ -406,9 +406,11 @@ export default class PortalPlugin extends Plugin {
 		editor.setLine(cursor.line, newLine);
 		
 		// Create entry in sidecar document
+		console.log('Creating sidecar entry for portal:', portalId);
 		await this.createSidecarEntry(portalId);
 		
 		// AUTOMATED FLOW: Open sidecar and move cursor
+		console.log('About to call openSidecarAndFocusPortal with:', portalId, originalPos);
 		await this.openSidecarAndFocusPortal(portalId, originalPos);
 		
 		new Notice(`🚪 Portal ${portalId} ready for content`, 2000);
@@ -640,8 +642,14 @@ export default class PortalPlugin extends Plugin {
 	}
 
 	async openSidecarAndFocusPortal(portalId: string, originalPos: { line: number, ch: number }) {
+		console.log('openSidecarAndFocusPortal called with portalId:', portalId);
+		
 		const activeFile = this.app.workspace.getActiveFile();
-		if (!activeFile) return;
+		if (!activeFile) {
+			console.log('No active file found');
+			return;
+		}
+		console.log('Active file:', activeFile.path);
 
 		// Store current context for ESC return
 		this.activePortal = {
@@ -655,17 +663,29 @@ export default class PortalPlugin extends Plugin {
 		};
 
 		const sidecarPath = activeFile.path.replace(/\.md$/, '.portals.md');
+		console.log('Looking for sidecar at:', sidecarPath);
 		const sidecarFile = this.app.vault.getAbstractFileByPath(sidecarPath);
 
 		if (sidecarFile) {
-			// Open sidecar in right pane
-			const leaf = this.app.workspace.getRightLeaf(false);
+			console.log('Sidecar file found, attempting to open');
+			// Open sidecar in right pane (create if needed)
+			const leaf = this.app.workspace.getRightLeaf(true);
+			console.log('Got leaf:', leaf);
 			if (leaf) {
-				await leaf.openFile(sidecarFile as any);
-				
-				// Focus the sidecar and position cursor at the portal section
-				await this.focusPortalInSidecar(leaf, portalId);
+				try {
+					await leaf.openFile(sidecarFile as any);
+					console.log('Sidecar opened, focusing portal');
+					
+					// Focus the sidecar and position cursor at the portal section
+					await this.focusPortalInSidecar(leaf, portalId);
+				} catch (error) {
+					console.error('Error opening sidecar:', error);
+				}
+			} else {
+				console.log('Failed to get right leaf');
 			}
+		} else {
+			console.log('Sidecar file not found at path:', sidecarPath);
 		}
 	}
 
