@@ -40,10 +40,7 @@ export default class PortalPlugin extends Plugin {
 		
 		this.injectStyles();
 		
-		// Handle portal door clicks for bidirectional editing
-		this.registerDomEvent(document, 'click', this.handlePortalClick.bind(this));
-		
-		// Handle typing in editor - use active-leaf-change to set up editor listeners
+		// Simple portal trigger detection - no complex state management
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', (leaf) => {
 				if (leaf?.view instanceof MarkdownView) {
@@ -52,7 +49,7 @@ export default class PortalPlugin extends Plugin {
 			})
 		);
 		
-		// Handle escape key and other shortcuts
+		// Handle escape key for portal creation
 		this.registerDomEvent(document, 'keydown', this.handleKeyDown.bind(this));
 		
 		// Commands
@@ -65,8 +62,14 @@ export default class PortalPlugin extends Plugin {
 			hotkeys: [{ modifiers: ['Ctrl'], key: 'p' }]
 		});
 
-		// Register custom sidenote post-processor for better positioning
-		this.registerMarkdownPostProcessor(this.processSidenotes.bind(this));
+		this.addCommand({
+			id: 'open-sidecar',
+			name: 'Open portal sidecar',
+			editorCallback: (editor: Editor) => {
+				this.openSidecar();
+			},
+			hotkeys: [{ modifiers: ['Ctrl', 'Shift'], key: 'p' }]
+		});
 		
 		this.addSettingTab(new PortalSettingTab(this.app, this));
 	}
@@ -295,13 +298,6 @@ export default class PortalPlugin extends Plugin {
 	}
 
 	handleKeyDown(evt: KeyboardEvent) {
-		// Handle escape key for closing portals
-		if (evt.key === this.settings.exitKey && this.activePortal) {
-			evt.preventDefault();
-			this.endPortalSession();
-			return;
-		}
-
 		// Track key sequence for portal trigger
 		if (evt.key === '|') {
 			// Clear any existing timeout
@@ -315,7 +311,7 @@ export default class PortalPlugin extends Plugin {
 			// Check if we have the full trigger
 			if (this.keySequence.endsWith(this.settings.portalTrigger)) {
 				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (activeView && !this.activePortal) {
+				if (activeView) {
 					// Small delay to ensure the characters are in the editor
 					setTimeout(() => {
 						this.checkAndStartPortal(activeView.editor);
@@ -354,33 +350,22 @@ export default class PortalPlugin extends Plugin {
 		}
 	}
 
-	startPortalSession(editor: Editor, cursor: { line: number, ch: number }, triggerPos: number) {
+	async startPortalSession(editor: Editor, cursor: { line: number, ch: number }, triggerPos: number) {
 		const portalId = this.generateId();
 		
-		this.activePortal = {
-			editor,
-			startPos: cursor,
-			portalPos: { line: cursor.line, ch: triggerPos },
-			portalId,
-			isActive: true
-		};
-
-		// Visual feedback - highlight the || trigger
-		this.addPortalEditingClass(editor, cursor.line);
-		
-		// Replace || with visual indicator that portal is active
+		// Simple atomic operation: replace || with door
 		const line = editor.getLine(cursor.line);
 		const newLine = line.slice(0, triggerPos) + `${this.settings.portalEmoji}[${portalId}]` + line.slice(cursor.ch);
 		editor.setLine(cursor.line, newLine);
 		
-		// Move cursor to after the emoji and ID
+		// Create entry in sidecar document
+		await this.createSidecarEntry(portalId);
+		
+		// Move cursor past the door
 		const newCursorPos = { line: cursor.line, ch: triggerPos + `${this.settings.portalEmoji}[${portalId}]`.length };
 		editor.setCursor(newCursorPos);
 		
-		// Apply subdued styling to subsequent typing
-		this.applyPortalTypingStyle(editor, newCursorPos);
-	
-		new Notice(`🌀 Portal ${portalId} opened (${this.settings.exitKey} to close)`, 3000);
+		new Notice(`🚪 Portal ${portalId} created - Ctrl+Shift+P to open sidecar`, 3000);
 	}
 
 	applyPortalTypingStyle(editor: Editor, cursorPos: { line: number, ch: number }) {
@@ -561,6 +546,51 @@ export default class PortalPlugin extends Plugin {
 		const cursor = editor.getCursor();
 		editor.replaceRange(this.settings.portalTrigger, cursor);
 		editor.setCursor({ line: cursor.line, ch: cursor.ch + this.settings.portalTrigger.length });
+	}
+
+	async createSidecarEntry(portalId: string) {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) return;
+
+		// Generate sidecar filename
+		const sidecarPath = activeFile.path.replace(/\.md$/, '.portals.md');
+		
+		// Check if sidecar exists, create if not
+		let sidecarFile = this.app.vault.getAbstractFileByPath(sidecarPath);
+		if (!sidecarFile) {
+			sidecarFile = await this.app.vault.create(sidecarPath, '# Portal Notes\n\n');
+		}
+
+		if (sidecarFile) {
+			try {
+				// Add portal entry to sidecar
+				const content = await this.app.vault.read(sidecarFile as any);
+				const timestamp = new Date().toLocaleTimeString();
+				const newEntry = `\n## Portal ${portalId} • ${timestamp}\n\n*Click here to add your thoughts...*\n\n`;
+				
+				await this.app.vault.modify(sidecarFile as any, content + newEntry);
+			} catch (error) {
+				console.error('Error updating sidecar:', error);
+			}
+		}
+	}
+
+	async openSidecar() {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) return;
+
+		const sidecarPath = activeFile.path.replace(/\.md$/, '.portals.md');
+		const sidecarFile = this.app.vault.getAbstractFileByPath(sidecarPath);
+
+		if (sidecarFile) {
+			// Open sidecar in right pane
+			const leaf = this.app.workspace.getRightLeaf(false);
+			if (leaf) {
+				await leaf.openFile(sidecarFile as any);
+			}
+		} else {
+			new Notice('No portal sidecar exists for this document');
+		}
 	}
 
 	addPortalEditingClass(editor: Editor, line: number) {
